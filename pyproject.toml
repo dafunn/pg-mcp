@@ -1,0 +1,20 @@
+[project]
+name = "pg-mcp"
+version = "0.1.0"
+description = "Postgres MCP server"
+requires-python = ">=3.14"
+license = "MIT"
+dependencies = [
+    "psycopg[binary]",
+    # The server uses the mcp 2.x API.
+    "mcp[cli]>=2,<3",
+    "pyyaml",
+    "starlette",
+    "uvicorn",
+]
+
+[project.optional-dependencies]
+# Test dependencies.
+dev = [
+    "pytest",
+]
