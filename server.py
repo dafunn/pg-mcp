@@ -177,13 +177,22 @@ def _query_named(sql: str, database: str, params: dict) -> str:
             return _format_rows(cur)
 
 
+# -- Error results ----------------------------------------------------
+
+
+class ErrorText(str):
+    """A tool result that reports a failure. call_tool sends it with isError set,
+    so a client can tell it from output (a query can return a row whose text
+    itself starts with "Error:")."""
+
+
 # -- Allowlist helper -------------------------------------------------
 
 
-def _check_db(database: str) -> str | None:
+def _check_db(database: str) -> ErrorText | None:
     """Return an error string if database is not in the allowlist, else None."""
     if ALLOWED_DATABASES is not None and database not in ALLOWED_DATABASES:
-        return f"Error: database '{database}' is not in the allowed set"
+        return ErrorText(f"Error: database '{database}' is not in the allowed set")
     return None
 
 
@@ -201,7 +210,7 @@ def _handle_pg_query(sql: str, database: str = "postgres") -> str:
     words = stripped.split()
     first_word = words[0] if words else ""
     if first_word not in _FIRST_WORD_ALLOWED:
-        return (
+        return ErrorText(
             f"Error: only read-only queries allowed "
             f"({', '.join(sorted(_FIRST_WORD_ALLOWED))}). Got: {first_word}"
         )
@@ -209,7 +218,7 @@ def _handle_pg_query(sql: str, database: str = "postgres") -> str:
     try:
         return _query(sql, database)
     except Exception as e:
-        return f"Error: {e}"
+        return ErrorText(f"Error: {e}")
 
 
 def _handle_pg_databases() -> str:
@@ -236,7 +245,7 @@ def _handle_pg_databases() -> str:
             """
             return _query(sql)
     except Exception as e:
-        return f"Error: {e}"
+        return ErrorText(f"Error: {e}")
 
 
 def _handle_pg_tables(database: str = "postgres", schema: str = "") -> str:
@@ -274,7 +283,7 @@ def _handle_pg_tables(database: str = "postgres", schema: str = "") -> str:
     try:
         return _query(sql, database, params) if params else _query(sql, database)
     except Exception as e:
-        return f"Error: {e}"
+        return ErrorText(f"Error: {e}")
 
 
 def _handle_pg_schema(
@@ -316,7 +325,7 @@ def _handle_pg_schema(
         indexes = _query(idx_sql, database, (table, schema, schema))
         return f"=== Columns ===\n{result}\n\n=== Indexes ===\n{indexes}"
     except Exception as e:
-        return f"Error: {e}"
+        return ErrorText(f"Error: {e}")
 
 
 def _handle_pg_size(database: str = "postgres") -> str:
@@ -348,7 +357,7 @@ def _handle_pg_size(database: str = "postgres") -> str:
         tables = _query(tables_sql, database)
         return f"=== Database: {database} ===\n{db_size}\n\n=== Tables by size ===\n{tables}"
     except Exception as e:
-        return f"Error: {e}"
+        return ErrorText(f"Error: {e}")
 
 
 def _handle_pg_activity(database: str = "") -> str:
@@ -381,7 +390,7 @@ def _handle_pg_activity(database: str = "") -> str:
     try:
         return _query(sql, "postgres", tuple(params) if params else ())
     except Exception as e:
-        return f"Error: {e}"
+        return ErrorText(f"Error: {e}")
 
 
 # -- Curated query helpers --------------------------------------------
@@ -426,12 +435,12 @@ def _run_curated(spec: dict, arguments: dict) -> str:
         elif "default" in p:
             bound[name] = p["default"]
         else:
-            return f"Error: required parameter '{name}' was not supplied"
+            return ErrorText(f"Error: required parameter '{name}' was not supplied")
 
     try:
         return _query_named(spec["sql"], spec["database"], bound)
     except Exception as e:
-        return f"Error: {e}"
+        return ErrorText(f"Error: {e}")
 
 
 # -- Static tool definitions ------------------------------------------
@@ -553,7 +562,13 @@ _METADATA_TOOLS: list[Tool] = [
 
 # -- MCP server -------------------------------------------------------
 
-_server = Server("pg-mcp")
+def release_version() -> str:
+    """The release this build reports to clients: PG_MCP_VERSION,
+    stamped into the image from the pg-mcp-v* tag at build time, else `dev`."""
+    return os.environ.get("PG_MCP_VERSION", "").strip() or "dev"
+
+
+_server = Server("pg-mcp", version=release_version())
 
 
 async def list_tools(_ctx: Any, _params: PaginatedRequestParams) -> ListToolsResult:
@@ -568,7 +583,8 @@ async def list_tools(_ctx: Any, _params: PaginatedRequestParams) -> ListToolsRes
 
 async def call_tool(_ctx: Any, params: CallToolRequestParams) -> CallToolResult:
     result = _dispatch(params.name, params.arguments or {})
-    return CallToolResult(content=[TextContent(type="text", text=result)])
+    return CallToolResult(content=[TextContent(type="text", text=result)],
+                          is_error=isinstance(result, ErrorText))
 
 # Each handler is registered with its wire method and params model; the runner
 # validates a request against the model before calling the handler.
@@ -579,46 +595,46 @@ _server.add_request_handler("tools/call", CallToolRequestParams, call_tool)
 def _dispatch(name: str, args: dict) -> str:
     if name == "pg_query":
         if not EXPOSE_RAW_QUERY:
-            return f"Error: tool '{name}' is not enabled on this instance"
+            return ErrorText(f"Error: tool '{name}' is not enabled on this instance")
         return _handle_pg_query(args.get("sql", ""), args.get("database", "postgres"))
 
     if name == "pg_databases":
         if not EXPOSE_METADATA:
-            return f"Error: tool '{name}' is not enabled on this instance"
+            return ErrorText(f"Error: tool '{name}' is not enabled on this instance")
         return _handle_pg_databases()
 
     if name == "pg_tables":
         if not EXPOSE_METADATA:
-            return f"Error: tool '{name}' is not enabled on this instance"
+            return ErrorText(f"Error: tool '{name}' is not enabled on this instance")
         return _handle_pg_tables(
             args.get("database", "postgres"), args.get("schema", "")
         )
 
     if name == "pg_schema":
         if not EXPOSE_METADATA:
-            return f"Error: tool '{name}' is not enabled on this instance"
+            return ErrorText(f"Error: tool '{name}' is not enabled on this instance")
         table = args.get("table")
         if not table:
-            return "Error: 'table' parameter is required"
+            return ErrorText("Error: 'table' parameter is required")
         return _handle_pg_schema(
             table, args.get("database", "postgres"), args.get("schema", "")
         )
 
     if name == "pg_size":
         if not EXPOSE_METADATA:
-            return f"Error: tool '{name}' is not enabled on this instance"
+            return ErrorText(f"Error: tool '{name}' is not enabled on this instance")
         return _handle_pg_size(args.get("database", "postgres"))
 
     if name == "pg_activity":
         if not EXPOSE_METADATA:
-            return f"Error: tool '{name}' is not enabled on this instance"
+            return ErrorText(f"Error: tool '{name}' is not enabled on this instance")
         return _handle_pg_activity(args.get("database", ""))
 
     for q in CURATED_QUERIES:
         if q["name"] == name:
             return _run_curated(q, args)
 
-    return f"Error: unknown tool '{name}'"
+    return ErrorText(f"Error: unknown tool '{name}'")
 
 
 # -- Entry point ------------------------------------------------------

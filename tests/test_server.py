@@ -6,6 +6,7 @@ import asyncio
 from unittest.mock import MagicMock, call, patch
 
 import pytest
+from mcp.types import CallToolRequestParams
 
 import server as srv
 
@@ -481,3 +482,96 @@ class TestDispatch:
             mock_rc.return_value = "ok"
             srv._dispatch("my_curated", {})
             mock_rc.assert_called_once_with(spec, {})
+
+
+# -- Error results carry isError -----------------------------------------------
+
+
+def _call(name, args):
+    return run(srv.call_tool(None, CallToolRequestParams(name=name, arguments=args)))
+
+
+class TestErrorResults:
+    def test_database_refusal_is_an_error_result(self):
+        with (
+            patch.object(srv, "EXPOSE_RAW_QUERY", True),
+            patch.object(srv, "ALLOWED_DATABASES", frozenset({"appdb"})),
+        ):
+            result = _call("pg_query", {"sql": "SELECT 1", "database": "otherdb"})
+        assert result.is_error is True
+        assert result.content[0].text == "Error: database 'otherdb' is not in the allowed set"
+
+    def test_write_query_refusal_is_an_error_result(self):
+        with (
+            patch.object(srv, "EXPOSE_RAW_QUERY", True),
+            patch.object(srv, "ALLOWED_DATABASES", None),
+        ):
+            result = _call("pg_query", {"sql": "DROP TABLE t", "database": "postgres"})
+        assert result.is_error is True
+        assert "only read-only queries allowed" in result.content[0].text
+
+    def test_metadata_missing_argument_is_an_error_result(self):
+        with patch.object(srv, "EXPOSE_METADATA", True):
+            result = _call("pg_schema", {})
+        assert result.is_error is True
+        assert result.content[0].text == "Error: 'table' parameter is required"
+
+    def test_query_failure_is_an_error_result(self):
+        with (
+            patch.object(srv, "EXPOSE_RAW_QUERY", True),
+            patch.object(srv, "ALLOWED_DATABASES", None),
+            patch("server._query", side_effect=RuntimeError("connection refused")),
+        ):
+            result = _call("pg_query", {"sql": "SELECT 1", "database": "postgres"})
+        assert result.is_error is True
+        assert result.content[0].text == "Error: connection refused"
+
+    def test_curated_missing_parameter_is_an_error_result(self):
+        spec = {"name": "recent", "description": "d", "database": "appdb",
+                "sql": "SELECT %(hours)s", "params": [{"name": "hours", "type": "integer",
+                                                       "description": "h"}]}
+        with (
+            patch.object(srv, "CURATED_QUERIES", [spec]),
+            patch.object(srv, "ALLOWED_DATABASES", None),
+        ):
+            result = _call("recent", {})
+        assert result.is_error is True
+        assert result.content[0].text == "Error: required parameter 'hours' was not supplied"
+
+    def test_unknown_tool_is_an_error_result(self):
+        with patch.object(srv, "CURATED_QUERIES", []):
+            result = _call("pg_nope", {})
+        assert result.is_error is True
+        assert result.content[0].text == "Error: unknown tool 'pg_nope'"
+
+    def test_a_row_reading_like_an_error_is_not_an_error(self):
+        with (
+            patch.object(srv, "EXPOSE_RAW_QUERY", True),
+            patch.object(srv, "ALLOWED_DATABASES", None),
+            patch("server._query", return_value="Error: disk full"),
+        ):
+            result = _call("pg_query", {"sql": "SELECT msg FROM log", "database": "postgres"})
+        assert not result.is_error
+        assert result.content[0].text == "Error: disk full"
+
+
+# -- Release version ------------------------------------------------
+
+
+def test_release_version_is_dev_when_unset(monkeypatch):
+    monkeypatch.delenv("PG_MCP_VERSION", raising=False)
+    assert srv.release_version() == "dev"
+
+
+def test_release_version_is_dev_when_blank(monkeypatch):
+    monkeypatch.setenv("PG_MCP_VERSION", "  ")
+    assert srv.release_version() == "dev"
+
+
+def test_release_version_reports_the_build_value(monkeypatch):
+    monkeypatch.setenv("PG_MCP_VERSION", "0.2.0-3-gabc1234")
+    assert srv.release_version() == "0.2.0-3-gabc1234"
+
+
+def test_server_reports_the_release_version():
+    assert srv._server.version == srv.release_version()

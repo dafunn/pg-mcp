@@ -75,6 +75,15 @@ python server.py
 Build the image from the included `Dockerfile` (`docker build .` or
 `podman build .`).
 
+The server reports its release in the MCP `initialize` result
+(`serverInfo.version`). To stamp it, build from a checkout with tags:
+
+```
+docker build --build-arg PG_MCP_VERSION=$(git describe --tags --match 'pg-mcp-v*' | sed 's/^pg-mcp-v//') .
+```
+
+A build without it reports `dev`.
+
 ## Running tests
 
 Requires Python 3.14 and [uv](https://docs.astral.sh/uv/).
