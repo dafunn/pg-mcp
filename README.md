@@ -17,9 +17,9 @@ only the tools its configuration enables.
 | `EXPOSE_METADATA` | `false` | Enable `pg_databases`, `pg_tables`, `pg_schema`, `pg_size`, `pg_activity` |
 | `PG_ALLOWED_DATABASES` | - | Comma-separated allowlist of database names |
 | `CURATED_QUERIES_FILE` | `/etc/pg-mcp/curated-queries.yaml` | Path to curated query registry |
-| `MCP_TRANSPORT` | `stdio` | Set to `sse` for in-cluster HTTP/SSE |
-| `MCP_HOST` | `0.0.0.0` | SSE bind host |
-| `MCP_PORT` | `3000` | SSE bind port |
+| `MCP_TRANSPORT` | `stdio` | Set to `streamable-http` to serve over HTTP at `/mcp` (stateless; `/healthz` for probes) |
+| `MCP_HOST` | `0.0.0.0` | HTTP bind host |
+| `MCP_PORT` | `3000` | HTTP bind port |
 
 Truthy values for boolean flags: `1`, `true`, `yes`, `on` (case-insensitive).
 
@@ -75,7 +75,7 @@ python server.py
 Build the image from the included `Dockerfile` (`docker build .` or
 `podman build .`).
 
-The server reports its release in the MCP `initialize` result
+The server reports its release in its MCP server info
 (`serverInfo.version`). To stamp it, build from a checkout with tags:
 
 ```
